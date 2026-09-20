@@ -1,6 +1,7 @@
 import fs from 'node:fs'
-import path from 'node:path'
 import Database from 'better-sqlite3'
+import type BetterSqlite3 from 'better-sqlite3'
+import path from 'node:path'
 import type { AnalysisResult } from './analyzer.js'
 
 type UserRow = {

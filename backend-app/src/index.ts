@@ -186,7 +186,7 @@ app.get('/api/analyses', requireAuth, (request, response) => {
   response.json(parseStoredResults(rows))
 })
 
-app.get('/api/analyses/:id', requireAuth, (request, response) => {
+app.get('/api/analyses/:id', requireAuth, (request: Request<{ id: string }>, response) => {
   const userId = getRequiredUserId(request, response)
   if (!userId) return
 

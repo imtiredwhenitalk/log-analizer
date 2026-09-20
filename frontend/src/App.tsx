@@ -1,6 +1,7 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ChangeEvent, DragEvent } from 'react'
-import { analyzeLogFile, type AnalysisResult } from './api'
+import { analyzeLogFile, currentUser, listAnalyses, logout, type AnalysisResult, type User } from './api'
+import AuthScreen from './AuthScreen'
 import './App.css'
 
 const iconPaths = {
@@ -43,6 +44,14 @@ const recentRuns: Run[] = [
   { name: 'auth-gateway.log', source: 'Auth gateway', date: 'Jun 11, 11:30', events: '4,112', status: 'Healthy' },
 ]
 
+const analysisToRun = (result: AnalysisResult): Run => ({
+  name: result.fileName,
+  source: 'Uploaded file',
+  date: new Date(result.analyzedAt).toLocaleString(),
+  events: result.summary.totalLines.toLocaleString(),
+  status: result.summary.criticalFindings > 0 ? 'Critical' : result.summary.findingCount > 0 ? 'Warning' : 'Healthy',
+})
+
 const statCards: { label: string; value: string; change: string; detail: string; icon: IconName; tone: string }[] = [
   { label: 'Total events', value: '38,527', change: '+12.8%', detail: 'vs last week', icon: 'file', tone: 'blue' },
   { label: 'Errors detected', value: '1,284', change: '-8.4%', detail: 'vs last week', icon: 'alert', tone: 'orange' },
@@ -64,6 +73,8 @@ const Icon = ({ name, size = 18 }: { name: IconName; size?: number }) => (
 )
 
 function App() {
+  const [user, setUser] = useState<User | null>(null)
+  const [authLoading, setAuthLoading] = useState(true)
   const [activeNav, setActiveNav] = useState('Overview')
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
@@ -73,6 +84,20 @@ function App() {
   const [runs, setRuns] = useState(recentRuns)
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    currentUser().then(setUser).finally(() => setAuthLoading(false))
+  }, [])
+
+  useEffect(() => {
+    if (!user) return
+    listAnalyses().then((results) => {
+      setRuns(results.map(analysisToRun))
+    }).catch(() => setNotice('Could not load analysis history'))
+  }, [user])
+
+  if (authLoading) return <div className="auth-loading">Loading your workspace…</div>
+  if (!user) return <AuthScreen onAuthenticated={setUser} />
 
   const handleFile = (file?: File) => {
     if (!file) return
@@ -104,14 +129,7 @@ function App() {
     try {
       const result = await analyzeLogFile(fileToAnalyze)
       setAnalysis(result)
-      const resultStatus: Run['status'] = result.summary.criticalFindings > 0 ? 'Critical' : result.summary.findingCount > 0 ? 'Warning' : 'Healthy'
-      setRuns((currentRuns) => [{
-        name: result.fileName,
-        source: 'Uploaded file',
-        date: 'Just now',
-        events: result.summary.totalLines.toLocaleString(),
-        status: resultStatus,
-      }, ...currentRuns.filter((run) => run.name !== result.fileName)].slice(0, 5))
+      setRuns((currentRuns) => [analysisToRun(result), ...currentRuns.filter((run) => run.name !== result.fileName)].slice(0, 5))
       setSelectedFile(null)
       setNotice(`Analysis complete: ${result.summary.findingCount} finding${result.summary.findingCount === 1 ? '' : 's'} detected`)
     } catch (error) {
@@ -134,6 +152,11 @@ function App() {
   const analysisRisk = analysis
     ? analysis.summary.criticalFindings > 0 ? 'critical' : analysis.summary.findingCount > 0 ? 'warning' : 'healthy'
     : 'healthy'
+
+  const handleLogout = async () => {
+    await logout()
+    setUser(null)
+  }
 
   const filteredRuns = runs.filter((run) =>
     `${run.name} ${run.source}`.toLowerCase().includes(searchQuery.toLowerCase()),
@@ -182,9 +205,9 @@ function App() {
             <button type="button" onClick={() => setNotice('Upgrade options are coming soon')}>Explore Pro <Icon name="arrow" size={14} /></button>
           </div>
           <div className="user-profile">
-            <div className="user-avatar">JD</div>
-            <div className="workspace-copy"><strong>Jordan Davis</strong><span>Admin</span></div>
-            <button aria-label="Open account menu" className="more-button" type="button" onClick={() => setNotice('Account menu opened')}><span /><span /><span /></button>
+            <div className="user-avatar">{user.displayName.slice(0, 2).toUpperCase()}</div>
+            <div className="workspace-copy"><strong>{user.displayName}</strong><span>{user.email}</span></div>
+            <button aria-label="Sign out" className="more-button" type="button" onClick={handleLogout}><span /><span /><span /></button>
           </div>
         </div>
       </aside>
@@ -199,7 +222,7 @@ function App() {
               <kbd>⌘ K</kbd>
             </label>
             <button aria-label="View notifications" className="icon-button has-notification" type="button" onClick={() => setNotice('You are all caught up')}><Icon name="bell" size={18} /></button>
-            <div className="top-avatar">JD</div>
+            <div className="top-avatar">{user.displayName.slice(0, 2).toUpperCase()}</div>
           </div>
         </header>
 
@@ -207,7 +230,7 @@ function App() {
           <section className="welcome-row">
             <div>
               <div className="eyebrow"><span className="live-dot" /> All systems operational</div>
-              <h1>Good morning, Jordan <span className="wave">✦</span></h1>
+              <h1>Good morning, {user.displayName.split(' ')[0]} <span className="wave">✦</span></h1>
               <p>Here&apos;s what&apos;s happening across your logs today.</p>
             </div>
             <button className="primary-button" type="button" onClick={() => inputRef.current?.click()}><Icon name="upload" size={17} /> Upload logs <span className="button-shortcut">U</span></button>
