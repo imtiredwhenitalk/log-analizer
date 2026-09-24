@@ -1,6 +1,16 @@
 {
+  "name": "loglens-root",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm --prefix backend-app run dev\" \"npm --prefix frontend run dev -- --host 0.0.0.0\"",
+    "build": "npm --prefix backend-app run typecheck && npm --prefix frontend run build",
+    "start": "npm --prefix backend-app run start"
+  },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",
     "tailwindcss": "^4.3.3"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
   }
 }
