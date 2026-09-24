@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ChangeEvent, DragEvent } from 'react'
-import { analyzeLogFile, currentUser, listAnalyses, logout, type AnalysisResult, type User } from './api'
+import type { ChangeEvent, DragEvent, FormEvent } from 'react'
+import { analyzeLogFile, currentUser, listAnalyses, listNotifications, logout, markAllNotificationsRead, markNotificationRead, type AnalysisResult, type Notification, type User, updateProfile } from './api'
 import AuthScreen from './AuthScreen'
 import './App.css'
 
@@ -10,6 +10,7 @@ const iconPaths = {
   clock: 'M12 7v5l3 2m6-2a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z',
   settings: 'M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm8.2-3.5c0-.5-.1-1-.2-1.4l2-1.5-2-3.4-2.3.9a8.2 8.2 0 0 0-2.4-1.4L15 3h-4l-.4 2.2c-.9.3-1.7.8-2.4 1.4l-2.3-.9-2 3.4 2 1.5A6 6 0 0 0 5.7 12c0 .5.1 1 .2 1.4l-2 1.5 2 3.4 2.3-.9a8.2 8.2 0 0 0 2.4 1.4L11 21h4l.4-2.2c.9-.3 1.7-.8 2.4-1.4l2.3.9 2-3.4-2-1.5c.1-.4.1-.9.1-1.4Z',
   bell: 'M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9ZM10 21h4',
+  user: 'M20 21a8 8 0 0 0-16 0m12-11a4 4 0 1 1-8 0 4 4 0 0 1 8 0',
   search: 'm20 20-4.3-4.3m1.3-5.2a6.5 6.5 0 1 1-13 0 6.5 6.5 0 0 1 13 0Z',
   arrow: 'M5 12h14m-6-6 6 6-6 6',
   file: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Zm0 0v6h6',
@@ -34,6 +35,7 @@ const navItems: { label: string; icon: IconName }[] = [
   { label: 'Overview', icon: 'grid' },
   { label: 'Upload logs', icon: 'upload' },
   { label: 'History', icon: 'clock' },
+  { label: 'Notifications', icon: 'bell' },
   { label: 'Settings', icon: 'settings' },
 ]
 
@@ -83,10 +85,26 @@ function App() {
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null)
   const [runs, setRuns] = useState(recentRuns)
   const [isAnalyzing, setIsAnalyzing] = useState(false)
+  const [isSavingProfile, setIsSavingProfile] = useState(false)
+  const [notifications, setNotifications] = useState<Notification[]>([])
+  const [notificationOpen, setNotificationOpen] = useState(false)
+  const [profileForm, setProfileForm] = useState({
+    displayName: '', role: '', company: '', timezone: 'UTC',
+    theme: 'light' as User['theme'], emailNotifications: true, securityAlerts: true,
+  })
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    currentUser().then(setUser).finally(() => setAuthLoading(false))
+    currentUser().then((loadedUser) => {
+      setUser(loadedUser)
+      if (loadedUser) {
+        setProfileForm({
+          displayName: loadedUser.displayName, role: loadedUser.role, company: loadedUser.company,
+          timezone: loadedUser.timezone, theme: loadedUser.theme,
+          emailNotifications: loadedUser.emailNotifications, securityAlerts: loadedUser.securityAlerts,
+        })
+      }
+    }).finally(() => setAuthLoading(false))
   }, [])
 
   useEffect(() => {
@@ -94,7 +112,12 @@ function App() {
     listAnalyses().then((results) => {
       setRuns(results.map(analysisToRun))
     }).catch(() => setNotice('Could not load analysis history'))
+    listNotifications().then(setNotifications).catch(() => setNotice('Could not load notifications'))
   }, [user])
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = user?.theme ?? 'light'
+  }, [user?.theme])
 
   if (authLoading) return <div className="auth-loading">Loading your workspace…</div>
   if (!user) return <AuthScreen onAuthenticated={setUser} />
@@ -158,6 +181,36 @@ function App() {
     setUser(null)
   }
 
+  const handleProfileSave = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setIsSavingProfile(true)
+    try {
+      const updatedUser = await updateProfile(profileForm)
+      setUser(updatedUser)
+      setNotice('Profile and current company updated')
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Could not update profile')
+    } finally {
+      setIsSavingProfile(false)
+    }
+  }
+
+  const unreadNotifications = notifications.filter((item) => !item.read_at).length
+  const handleNotificationClick = async (notification: Notification) => {
+    if (!notification.read_at) {
+      await markNotificationRead(notification.id)
+      setNotifications((items) => items.map((item) => item.id === notification.id ? { ...item, read_at: new Date().toISOString() } : item))
+    }
+    setNotificationOpen(false)
+    setNotice(notification.message)
+  }
+
+  const handleMarkAllRead = async () => {
+    await markAllNotificationsRead()
+    setNotifications((items) => items.map((item) => ({ ...item, read_at: item.read_at ?? new Date().toISOString() })))
+    setNotice('All notifications marked as read')
+  }
+
   const filteredRuns = runs.filter((run) =>
     `${run.name} ${run.source}`.toLowerCase().includes(searchQuery.toLowerCase()),
   )
@@ -171,10 +224,10 @@ function App() {
             <span>log<span className="brand-accent">lens</span></span>
           </div>
           <div className="workspace-switcher">
-            <div className="workspace-avatar">AC</div>
+            <div className="workspace-avatar">{user.company.slice(0, 2).toUpperCase()}</div>
             <div className="workspace-copy">
               <span>Workspace</span>
-              <strong>Acme Cloud</strong>
+              <strong>{user.company}</strong>
             </div>
             <Icon name="chevron" size={15} />
           </div>
@@ -186,13 +239,21 @@ function App() {
                 key={item.label}
                 onClick={() => {
                   setActiveNav(item.label)
+                  if (item.label === 'Settings') {
+                    setProfileForm({
+                      displayName: user.displayName, role: user.role, company: user.company,
+                      timezone: user.timezone, theme: user.theme,
+                      emailNotifications: user.emailNotifications, securityAlerts: user.securityAlerts,
+                    })
+                  }
                   if (item.label !== 'Overview') setNotice(`${item.label} view is ready for your next workflow`)
                 }}
                 type="button"
               >
                 <Icon name={item.icon} size={18} />
                 <span>{item.label}</span>
-                {item.label === 'History' && <span className="nav-count">4</span>}
+                {item.label === 'History' && <span className="nav-count">{runs.length}</span>}
+                {item.label === 'Notifications' && unreadNotifications > 0 && <span className="nav-count">{unreadNotifications}</span>}
               </button>
             ))}
           </nav>
@@ -206,7 +267,7 @@ function App() {
           </div>
           <div className="user-profile">
             <div className="user-avatar">{user.displayName.slice(0, 2).toUpperCase()}</div>
-            <div className="workspace-copy"><strong>{user.displayName}</strong><span>{user.email}</span></div>
+          <div className="workspace-copy"><strong>{user.displayName}</strong><span>{user.role}</span></div>
             <button aria-label="Sign out" className="more-button" type="button" onClick={handleLogout}><span /><span /><span /></button>
           </div>
         </div>
@@ -221,12 +282,89 @@ function App() {
               <input aria-label="Search log analyses" onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search analyses..." value={searchQuery} />
               <kbd>⌘ K</kbd>
             </label>
-            <button aria-label="View notifications" className="icon-button has-notification" type="button" onClick={() => setNotice('You are all caught up')}><Icon name="bell" size={18} /></button>
+            <div className="notification-anchor">
+              <button aria-label="View notifications" className={`icon-button ${unreadNotifications > 0 ? 'has-notification' : ''}`} type="button" onClick={() => setNotificationOpen((open) => !open)}><Icon name="bell" size={18} /></button>
+              {notificationOpen && <div className="notification-popover">
+                <div className="notification-header"><div><strong>Notifications</strong><span>{unreadNotifications ? `${unreadNotifications} unread` : 'All caught up'}</span></div><button onClick={handleMarkAllRead} type="button">Mark all read</button></div>
+                <div className="notification-items">
+                  {notifications.length === 0 ? <div className="notification-empty"><Icon name="check" size={18} /><span>No notifications yet</span></div> : notifications.slice(0, 8).map((item) => <button className={`notification-item ${item.read_at ? '' : 'unread'}`} key={item.id} onClick={() => { void handleNotificationClick(item) }} type="button"><span className={`notification-dot ${item.kind}`} /><span><strong>{item.title}</strong><small>{item.message}</small><time>{new Date(item.created_at).toLocaleString()}</time></span></button>)}
+                </div>
+                <button className="notification-footer" onClick={() => { setActiveNav('Notifications'); setNotificationOpen(false) }} type="button">Open notification center <Icon name="arrow" size={13} /></button>
+              </div>}
+            </div>
             <div className="top-avatar">{user.displayName.slice(0, 2).toUpperCase()}</div>
           </div>
         </header>
 
         <div className="page-content">
+          {activeNav === 'Notifications' && (
+            <section className="page-view">
+              <div className="page-view-heading"><div><span className="panel-eyebrow">WORKSPACE CENTER</span><h1>Notifications</h1><p>Security events, analysis updates, and workspace activity.</p></div><button className="small-primary-button" onClick={() => { void handleMarkAllRead() }} type="button">Mark all read</button></div>
+              <section className="panel notification-center">
+                {notifications.length === 0 ? <div className="notification-empty large"><Icon name="check" size={22} /><strong>You’re all caught up</strong><span>New security activity will appear here.</span></div> : notifications.map((item) => <button className={`notification-item center ${item.read_at ? '' : 'unread'}`} key={item.id} onClick={() => { void handleNotificationClick(item) }} type="button"><span className={`notification-dot ${item.kind}`} /><span><strong>{item.title}</strong><small>{item.message}</small><time>{new Date(item.created_at).toLocaleString()}</time></span><Icon name="arrow" size={15} /></button>)}
+              </section>
+            </section>
+          )}
+
+          {activeNav === 'Settings' && (
+            <section className="page-view">
+              <div className="page-view-heading">
+                <div>
+                  <span className="panel-eyebrow">PROFILE &amp; WORKSPACE</span>
+                  <h1>Your profile</h1>
+                  <p>Manage how your role and current company appear in the workspace.</p>
+                </div>
+                <div className="profile-identity">
+                  <div className="large-avatar">{user.displayName.slice(0, 2).toUpperCase()}</div>
+                  <div><strong>{user.displayName}</strong><span>{user.email}</span></div>
+                </div>
+              </div>
+              <div className="profile-layout">
+                <form className="panel profile-form" onSubmit={handleProfileSave}>
+                  <div className="form-section-heading"><strong>Personal information</strong><span>Visible to your workspace</span></div>
+                  <label>Full name<input value={profileForm.displayName} onChange={(event) => setProfileForm({ ...profileForm, displayName: event.target.value })} required /></label>
+                  <label>Role<input value={profileForm.role} onChange={(event) => setProfileForm({ ...profileForm, role: event.target.value })} required /></label>
+                  <label>Current company<input value={profileForm.company} onChange={(event) => setProfileForm({ ...profileForm, company: event.target.value })} required /></label>
+                  <label>Timezone<select value={profileForm.timezone} onChange={(event) => setProfileForm({ ...profileForm, timezone: event.target.value })}><option>UTC</option><option>Europe/Moscow</option><option>Europe/London</option><option>America/New_York</option><option>America/Los_Angeles</option><option>Asia/Tokyo</option></select></label>
+                  <label>Appearance<select value={profileForm.theme} onChange={(event) => setProfileForm({ ...profileForm, theme: event.target.value as User['theme'] })}><option value="light">Light mode</option><option value="dark">Dark mode</option><option value="system">Use system preference</option></select></label>
+                  <div className="settings-toggles"><label className="toggle-row"><span><strong>Email updates</strong><small>Receive product and analysis summaries</small></span><input checked={profileForm.emailNotifications} onChange={(event) => setProfileForm({ ...profileForm, emailNotifications: event.target.checked })} type="checkbox" /></label><label className="toggle-row"><span><strong>Security alerts</strong><small>Notify me when suspicious activity is detected</small></span><input checked={profileForm.securityAlerts} onChange={(event) => setProfileForm({ ...profileForm, securityAlerts: event.target.checked })} type="checkbox" /></label></div>
+                  <div className="profile-form-actions"><span>Changes are saved to your account.</span><button className="small-primary-button" disabled={isSavingProfile} type="submit">{isSavingProfile ? 'Saving…' : 'Save changes'}</button></div>
+                </form>
+                <aside className="panel company-card">
+                  <span className="panel-eyebrow">CURRENT WORKSPACE</span>
+                  <div className="company-logo">{user.company.slice(0, 2).toUpperCase()}</div>
+                  <h2>{user.company}</h2>
+                  <p>Your analyses and security reports are associated with this company.</p>
+                  <div className="company-detail"><span>Role</span><strong>{user.role}</strong></div>
+                  <div className="company-detail"><span>Member since</span><strong>{new Date(user.createdAt).toLocaleDateString()}</strong></div>
+                </aside>
+              </div>
+            </section>
+          )}
+
+          {activeNav === 'History' && (
+            <section className="page-view">
+              <div className="page-view-heading"><div><span className="panel-eyebrow">WORKSPACE ACTIVITY</span><h1>Analysis history</h1><p>Review the log files analyzed by your account.</p></div><strong className="history-total">{runs.length} runs</strong></div>
+              <section className="panel history-list">
+                {filteredRuns.length > 0 ? filteredRuns.map((run) => <div className="history-row" key={run.name}><div className="table-file-icon"><Icon name="file" size={16} /></div><div className="history-row-main"><strong>{run.name}</strong><span>{run.source} · {run.date}</span></div><span className={`status ${run.status.toLowerCase()}`}><i />{run.status}</span><span className="history-events">{run.events} events</span></div>) : <div className="empty-state">No analyses found.</div>}
+              </section>
+            </section>
+          )}
+
+          {activeNav === 'Upload logs' && (
+            <section className="page-view upload-page">
+              <div className="page-view-heading"><div><span className="panel-eyebrow">INGESTION CENTER</span><h1>Upload logs</h1><p>Drop a security or access log here to start a new analysis.</p></div></div>
+              <section className="panel upload-page-card">
+                <div className="banner-icon"><Icon name="upload" size={21} /></div>
+                <h2>Analyze a new log file</h2>
+                <p>Supported formats: .log, .txt, .json, and .csv. Maximum file size is 10 MB.</p>
+                <button className="primary-button" type="button" onClick={() => inputRef.current?.click()}><Icon name="upload" size={17} /> Choose a file</button>
+                {selectedFile && <div className="upload-page-ready"><strong>{selectedFile.name}</strong><span>Ready to analyze</span><button className="small-primary-button" disabled={isAnalyzing} onClick={handleAnalyze} type="button">{isAnalyzing ? 'Analyzing…' : 'Analyze file'}</button></div>}
+              </section>
+            </section>
+          )}
+
+          <div className="dashboard-content" hidden={activeNav !== 'Overview'}>
           <section className="welcome-row">
             <div>
               <div className="eyebrow"><span className="live-dot" /> All systems operational</div>
@@ -354,6 +492,7 @@ function App() {
             <div className="runs-table-wrap"><table className="runs-table"><thead><tr><th>File name</th><th>Source</th><th>Analyzed</th><th>Events</th><th>Status</th><th /></tr></thead><tbody>{filteredRuns.map((run) => <tr key={run.name}><td><div className="file-cell"><div className="table-file-icon"><Icon name="file" size={16} /></div><strong>{run.name}</strong></div></td><td>{run.source}</td><td>{run.date}</td><td>{run.events}</td><td><span className={`status ${run.status.toLowerCase()}`}><i />{run.status}</span></td><td><button aria-label={`Open ${run.name}`} className="row-arrow" onClick={() => setNotice(`Opening ${run.name}`)} type="button"><Icon name="arrow" size={15} /></button></td></tr>)}</tbody></table>{filteredRuns.length === 0 && <div className="empty-state">No analyses match “{searchQuery}”.</div>}</div>
           </section>
           <p className="footer-note">Loglens <span>•</span> Your logs, made legible.</p>
+          </div>
         </div>
       </main>
       {notice && <button className="toast" onClick={() => setNotice('')} role="status" type="button"><span className="toast-check"><Icon name="check" size={14} /></span>{notice}<Icon name="close" size={14} /></button>}

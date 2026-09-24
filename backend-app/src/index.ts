@@ -4,7 +4,7 @@ import multer from 'multer'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { analyzeLog, type AnalysisResult } from './analyzer.js'
-import { analysisQueries, toAnalysisResult, userQueries, type UserRow } from './db.js'
+import { analysisQueries, notificationQueries, toAnalysisResult, userQueries, type UserRow } from './db.js'
 import { createToken, hashPassword, publicUser, requireAuth, verifyPassword } from './auth.js'
 import { loggerMiddleware } from './logger.js'
 
@@ -13,7 +13,7 @@ const PORT = Number(process.env.PORT ?? 3000)
 const MAX_FILE_SIZE = 10 * 1024 * 1024
 const allowedExtensions = new Set(['.log', '.txt', '.json', '.csv'])
 
-type PublicUserRow = Pick<UserRow, 'id' | 'email' | 'display_name' | 'created_at'>
+type PublicUserRow = Pick<UserRow, 'id' | 'email' | 'display_name' | 'role' | 'company' | 'timezone' | 'theme' | 'email_notifications' | 'security_alerts' | 'created_at'>
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -33,7 +33,7 @@ app.use(express.json({ limit: '100kb' }))
 app.use((request, response, next) => {
   const allowedOrigin = process.env.FRONTEND_ORIGIN ?? 'http://localhost:5173'
   response.setHeader('Access-Control-Allow-Origin', allowedOrigin)
-  response.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+  response.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,OPTIONS')
   response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
   response.setHeader('Access-Control-Expose-Headers', 'Content-Length')
   if (request.method === 'OPTIONS') {
@@ -78,6 +78,8 @@ app.post('/api/auth/register', async (request, response, next) => {
   const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : ''
   const password = typeof body.password === 'string' ? body.password : ''
   const displayName = typeof body.displayName === 'string' ? body.displayName.trim() : ''
+  const role = typeof body.role === 'string' ? body.role.trim() : 'Security Analyst'
+  const company = typeof body.company === 'string' ? body.company.trim() : 'Acme Cloud'
 
   if (!/^\S+@\S+\.\S+$/.test(email)) {
     response.status(400).json({ error: 'Enter a valid email address.' })
@@ -91,6 +93,10 @@ app.post('/api/auth/register', async (request, response, next) => {
     response.status(400).json({ error: 'Name must be between 2 and 60 characters.' })
     return
   }
+  if (role.length < 2 || role.length > 80 || company.length < 2 || company.length > 100) {
+    response.status(400).json({ error: 'Role and company must be between 2 and 100 characters.' })
+    return
+  }
 
   try {
     const existing = userQueries.findByEmail.get(email) as UserRow | undefined
@@ -101,7 +107,7 @@ app.post('/api/auth/register', async (request, response, next) => {
 
     const id = randomUUID()
     const passwordHash = await hashPassword(password)
-    userQueries.create.run({ id, email, display_name: displayName, password_hash: passwordHash })
+    userQueries.create.run({ id, email, display_name: displayName, role, company, timezone: 'UTC', theme: 'light', email_notifications: 1, security_alerts: 1, password_hash: passwordHash })
     const user = userQueries.findById.get(id) as PublicUserRow
     response.status(201).json({ user: publicUser(user), token: createToken(id) })
   } catch (error) {
@@ -149,6 +155,44 @@ app.get('/api/auth/me', requireAuth, (request, response) => {
   response.json({ user: publicUser(user) })
 })
 
+app.put('/api/auth/profile', requireAuth, (request, response, next) => {
+  const userId = getRequiredUserId(request, response)
+  if (!userId) return
+
+  const body = asBodyRecord(request.body)
+  const displayName = typeof body.displayName === 'string' ? body.displayName.trim() : ''
+  const role = typeof body.role === 'string' ? body.role.trim() : ''
+  const company = typeof body.company === 'string' ? body.company.trim() : ''
+  const timezone = typeof body.timezone === 'string' ? body.timezone.trim() : 'UTC'
+  const theme = body.theme === 'dark' || body.theme === 'system' ? body.theme : 'light'
+  const emailNotifications = typeof body.emailNotifications === 'boolean' ? body.emailNotifications : true
+  const securityAlerts = typeof body.securityAlerts === 'boolean' ? body.securityAlerts : true
+  if (displayName.length < 2 || displayName.length > 60) {
+    response.status(400).json({ error: 'Name must be between 2 and 60 characters.' })
+    return
+  }
+  if (role.length < 2 || role.length > 80) {
+    response.status(400).json({ error: 'Role must be between 2 and 80 characters.' })
+    return
+  }
+  if (company.length < 2 || company.length > 100) {
+    response.status(400).json({ error: 'Company must be between 2 and 100 characters.' })
+    return
+  }
+
+  try {
+    userQueries.updateProfile.run({ id: userId, display_name: displayName, role, company, timezone, theme, email_notifications: emailNotifications ? 1 : 0, security_alerts: securityAlerts ? 1 : 0 })
+    const user = userQueries.findById.get(userId) as PublicUserRow | undefined
+    if (!user) {
+      response.status(404).json({ error: 'User account not found.' })
+      return
+    }
+    response.json({ user: publicUser(user) })
+  } catch (error) {
+    next(error)
+  }
+})
+
 app.post('/api/auth/logout', requireAuth, (_request, response) => {
   response.status(204).send()
 })
@@ -175,7 +219,37 @@ app.post('/api/analyze', requireAuth, upload.single('file'), (request, response)
     analyzed_at: result.analyzedAt,
     result_json: JSON.stringify(result),
   })
+  const owner = userQueries.findById.get(userId) as PublicUserRow | undefined
+  if (result.summary.findingCount > 0 && owner?.security_alerts) {
+    notificationQueries.create.run({
+      id: randomUUID(),
+      user_id: userId,
+      title: result.summary.criticalFindings > 0 ? 'Critical activity detected' : 'New security findings',
+      message: `${result.fileName} contains ${result.summary.attackEvents} suspicious event${result.summary.attackEvents === 1 ? '' : 's'}.`,
+      kind: result.summary.criticalFindings > 0 ? 'security' : 'system',
+    })
+  }
   response.status(201).json(result)
+})
+
+app.get('/api/notifications', requireAuth, (request, response) => {
+  const userId = getRequiredUserId(request, response)
+  if (!userId) return
+  response.json(notificationQueries.listByUser.all(userId))
+})
+
+app.patch('/api/notifications/:id/read', requireAuth, (request: Request<{ id: string }>, response) => {
+  const userId = getRequiredUserId(request, response)
+  if (!userId) return
+  notificationQueries.markRead.run({ id: request.params.id, user_id: userId })
+  response.status(204).send()
+})
+
+app.post('/api/notifications/read-all', requireAuth, (request, response) => {
+  const userId = getRequiredUserId(request, response)
+  if (!userId) return
+  notificationQueries.markAllRead.run(userId)
+  response.status(204).send()
 })
 
 app.get('/api/analyses', requireAuth, (request, response) => {

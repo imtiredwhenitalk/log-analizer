@@ -8,6 +8,12 @@ export type AuthUser = {
   id: string
   email: string
   displayName: string
+  role: string
+  company: string
+  timezone: string
+  theme: string
+  emailNotifications: boolean
+  securityAlerts: boolean
   createdAt: string
 }
 
@@ -47,11 +53,28 @@ export function requireAuth(request: Request, response: Response, next: NextFunc
   }
 }
 
-export function publicUser(row: { id: string; email: string; display_name: string; created_at: string }): AuthUser {
+export function publicUser(row: {
+  id: string
+  email: string
+  display_name: string
+  role: string
+  company: string
+  timezone: string
+  theme: string
+  email_notifications: number
+  security_alerts: number
+  created_at: string
+}): AuthUser {
   return {
     id: row.id,
     email: row.email,
     displayName: row.display_name,
+    role: row.role,
+    company: row.company,
+    timezone: row.timezone,
+    theme: row.theme === 'dark' || row.theme === 'system' ? row.theme : 'light',
+    emailNotifications: Boolean(row.email_notifications),
+    securityAlerts: Boolean(row.security_alerts),
     createdAt: row.created_at,
   }
 }

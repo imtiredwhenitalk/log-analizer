@@ -10,6 +10,8 @@ type Mode = 'login' | 'register'
 export default function AuthScreen({ onAuthenticated }: AuthScreenProps) {
   const [mode, setMode] = useState<Mode>('login')
   const [displayName, setDisplayName] = useState('')
+  const [company, setCompany] = useState('')
+  const [role, setRole] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
@@ -27,7 +29,7 @@ export default function AuthScreen({ onAuthenticated }: AuthScreenProps) {
     try {
       const user = mode === 'login'
         ? await login(email, password)
-        : await register(email, password, displayName)
+        : await register(email, password, displayName, company, role)
       onAuthenticated(user)
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : 'Something went wrong. Try again.')
@@ -61,6 +63,8 @@ export default function AuthScreen({ onAuthenticated }: AuthScreenProps) {
           <div className="auth-tabs"><button className={mode === 'login' ? 'active' : ''} onClick={() => switchMode('login')} type="button">Sign in</button><button className={mode === 'register' ? 'active' : ''} onClick={() => switchMode('register')} type="button">Create account</button></div>
           <form className="auth-form" onSubmit={submit}>
             {mode === 'register' && <label>Full name<input autoComplete="name" onChange={(event) => setDisplayName(event.target.value)} placeholder="Jordan Davis" required value={displayName} /></label>}
+            {mode === 'register' && <label>Company<input autoComplete="organization" onChange={(event) => setCompany(event.target.value)} placeholder="Acme Cloud" required value={company} /></label>}
+            {mode === 'register' && <label>Role<input onChange={(event) => setRole(event.target.value)} placeholder="Security Analyst" required value={role} /></label>}
             <label>Email address<input autoComplete="email" onChange={(event) => setEmail(event.target.value)} placeholder="you@company.com" required type="email" value={email} /></label>
             <label>Password<div className="password-field"><input autoComplete={mode === 'login' ? 'current-password' : 'new-password'} minLength={8} onChange={(event) => setPassword(event.target.value)} placeholder="At least 8 characters" required type="password" value={password} /><span>•••</span></div></label>
             {mode === 'login' && <div className="form-options"><label className="checkbox-label"><input type="checkbox" /> Remember me</label><button onClick={() => setError('Password reset is not configured yet.')} type="button">Forgot password?</button></div>}

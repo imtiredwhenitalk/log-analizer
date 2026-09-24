@@ -39,12 +39,27 @@ export type User = {
   id: string
   email: string
   displayName: string
+  role: string
+  company: string
+  timezone: string
+  theme: 'light' | 'dark' | 'system'
+  emailNotifications: boolean
+  securityAlerts: boolean
   createdAt: string
+}
+
+export type Notification = {
+  id: string
+  user_id: string
+  title: string
+  message: string
+  kind: 'security' | 'system' | 'success'
+  created_at: string
+  read_at: string | null
 }
 
 type ApiError = { error?: string }
 type AuthResponse = { user: User; token: string }
-
 const apiBase = (import.meta.env.VITE_API_URL || (window.location.port === '5173' ? 'http://localhost:3000' : '')).replace(/\/$/, '')
 const tokenKey = 'loglens_token'
 
@@ -82,8 +97,12 @@ export async function login(email: string, password: string): Promise<User> {
   return saveAuth(await request<AuthResponse>('/api/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }))
 }
 
-export async function register(email: string, password: string, displayName: string): Promise<User> {
-  return saveAuth(await request<AuthResponse>('/api/auth/register', { method: 'POST', body: JSON.stringify({ email, password, displayName }) }))
+export async function register(email: string, password: string, displayName: string, company = 'Acme Cloud', role = 'Security Analyst'): Promise<User> {
+  return saveAuth(await request<AuthResponse>('/api/auth/register', { method: 'POST', body: JSON.stringify({ email, password, displayName, company, role }) }))
+}
+
+export async function updateProfile(profile: Pick<User, 'displayName' | 'role' | 'company' | 'timezone' | 'theme' | 'emailNotifications' | 'securityAlerts'>): Promise<User> {
+  return (await request<{ user: User }>('/api/auth/profile', { method: 'PUT', body: JSON.stringify(profile) })).user
 }
 
 export async function currentUser(): Promise<User | null> {
@@ -112,4 +131,16 @@ export async function analyzeLogFile(file: File): Promise<AnalysisResult> {
 
 export async function listAnalyses(): Promise<AnalysisResult[]> {
   return request<AnalysisResult[]>('/api/analyses')
+}
+
+export async function listNotifications(): Promise<Notification[]> {
+  return request<Notification[]>('/api/notifications')
+}
+
+export async function markNotificationRead(id: string): Promise<void> {
+  await request<void>(`/api/notifications/${id}/read`, { method: 'PATCH' })
+}
+
+export async function markAllNotificationsRead(): Promise<void> {
+  await request<void>('/api/notifications/read-all', { method: 'POST' })
 }

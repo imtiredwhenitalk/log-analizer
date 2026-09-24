@@ -46,6 +46,10 @@ npm run dev
 ## Возможности
 
 - Регистрация и вход по email/password.
+- Профиль пользователя с отображением роли и текущей компании.
+- Редактирование имени, роли и компании из раздела Settings.
+- Настройки часового пояса, темы, email-обновлений и security alerts.
+- Центр уведомлений с непрочитанными событиями и отметкой прочитанного.
 - Пароли хешируются через `bcryptjs`.
 - JWT-аутентификация с expiry 7 дней.
 - Защищённые API-эндпоинты: анализы доступны только владельцу.
@@ -61,9 +65,13 @@ npm run dev
 
 Auth:
 
-- `POST /api/auth/register` — `{ email, password, displayName }`.
+- `POST /api/auth/register` — `{ email, password, displayName, role?, company? }`.
 - `POST /api/auth/login` — `{ email, password }`.
 - `GET /api/auth/me` — текущий пользователь.
+- `PUT /api/auth/profile` — `{ displayName, role, company, timezone, theme, emailNotifications, securityAlerts }`, обновление профиля и настроек.
+- `GET /api/notifications` — уведомления текущего пользователя.
+- `PATCH /api/notifications/:id/read` — отметить уведомление прочитанным.
+- `POST /api/notifications/read-all` — отметить все уведомления прочитанными.
 - `POST /api/auth/logout` — завершение клиентской сессии.
 
 Анализы требуют `Authorization: Bearer <token>`:
