@@ -48,6 +48,13 @@ type Rule = {
 
 type Example = { line: number; snippet: string }
 
+type LogLine = {
+  number: number
+  raw: string
+  searchable: string
+  ip?: string
+}
+
 const rules: Rule[] = [
   {
     id: 'sql-injection',
@@ -59,6 +66,7 @@ const rules: Rule[] = [
     patterns: [
       /(?:union\s+(?:all\s+)?select|select\s+.+\s+from\s+.+\s+where)/i,
       /(?:%27|')\s*(?:or|and)\s+['\d]/i,
+      /(?:\b(?:or|and)\b\s+['"]?\d+['"]?\s*=\s*['"]?\d+|['"]\s*(?:or|and)\s+['"]?[^\s'"]+['"]?\s*=)/i,
       /(?:sleep|benchmark)\s*\(/i,
       /\bsqlmap\b/i,
     ],
@@ -99,6 +107,7 @@ const rules: Rule[] = [
     recommendation: 'Avoid shell interpolation, use safe process APIs with fixed arguments, and apply strict allow-lists.',
     patterns: [
       /(?:^|[;&|])\s*(?:curl|wget|nc|bash|sh|powershell|cmd(?:\.exe)?)(?:\s|$)/i,
+      /(?:^|[;&|])\s*(?:cat|chmod|chown|id|whoami|uname|python(?:3)?|perl|ruby|node)(?:\s|$)/i,
       /(?:\/bin\/(?:ba)?sh|powershell\s+-e(?:nc)?|cmd\.exe\s+\/c)/i,
       /(?:\$\(|`[^`]+`)/i,
     ],
@@ -113,7 +122,8 @@ const rules: Rule[] = [
     patterns: [
       /169\.254\.169\.254/i,
       /metadata\.google\.internal/i,
-      /(?:https?|ftp):\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])/i,
+      /(?:https?|ftp):\/\/(?:[^\s/@]+(?::[^\s/@]*)?@)?(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])/i,
+      /(?:https?|ftp):\/\/(?:[^\s/@]+(?::[^\s/@]*)?@)?(?:10\.(?:\d{1,3}\.){2}\d{1,3}|192\.168\.(?:\d{1,3}\.)\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.(?:\d{1,3}\.)\d{1,3})(?::\d+)?(?:[/?\s]|$)/i,
     ],
   },
   {
@@ -166,14 +176,19 @@ const rules: Rule[] = [
 ]
 
 const ipv4Pattern = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g
-const methodPattern = /"?(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\s+\S+/i
+const methodPatterns = [
+  /"?(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\s+\S+/i,
+  /["']?method["']?\s*[:=]\s*["']?(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\b/i,
+]
 const statusPatterns = [
   /HTTP\/\d(?:\.\d)?\s+([1-5]\d{2})\b/i,
   /(?:status|code)[=: ]+([1-5]\d{2})\b/i,
-  /(?:^|\s)([1-5]\d{2})(?:\s|$)/,
+  /["']?(?:status|statusCode|code)["']?\s*[:=]\s*["']?([1-5]\d{2})\b/i,
+  /"\s*([1-5]\d{2})\s+(?:\d+|-)(?:\s|$)/,
 ]
 const durationPatterns = [
   /(?:duration|response[_ -]?time|latency)[=: ]+(\d+(?:\.\d+)?)\s*ms/i,
+  /["']?(?:duration|response[_ -]?time|latency)["']?\s*[:=]\s*(\d+(?:\.\d+)?)/i,
   /(?:in|took)\s+(\d+(?:\.\d+)?)\s*ms/i,
 ]
 
@@ -184,12 +199,60 @@ function redactSensitiveData(value: string): string {
     .slice(0, 240)
 }
 
-function getExamples(lines: string[], rule: Rule): Example[] {
+function testPattern(pattern: RegExp, value: string): boolean {
+  pattern.lastIndex = 0
+  return pattern.test(value)
+}
+
+function decodeForSearch(value: string): string {
+  let decoded = value.replace(/\+/g, ' ')
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const next = decodeURIComponent(decoded)
+      if (next === decoded) break
+      decoded = next
+    } catch {
+      decoded = decoded.replace(/(?:%[\da-f]{2})+/gi, (encoded) => {
+        try {
+          return decodeURIComponent(encoded)
+        } catch {
+          return encoded
+        }
+      })
+      break
+    }
+  }
+  return decoded
+}
+
+function isValidIpv4(value: string): boolean {
+  return value.split('.').map(Number).every((octet) => octet >= 0 && octet <= 255)
+}
+
+function toLogLines(content: string): LogLine[] {
+  return content
+    .replace(/\0/g, '')
+    .split(/\r?\n/)
+    .map((raw, index) => ({ raw, number: index + 1 }))
+    .filter(({ raw }) => raw.trim().length > 0)
+    .map(({ raw, number }) => {
+      const ip = raw.match(ipv4Pattern)?.find(isValidIpv4)
+      return ip
+        ? { raw, number, searchable: decodeForSearch(raw), ip }
+        : { raw, number, searchable: decodeForSearch(raw) }
+    })
+}
+
+function matchesRule(line: LogLine, rule: Rule): boolean {
+  return rule.patterns.some((pattern) => testPattern(pattern, line.searchable))
+}
+
+function getExamples(lines: LogLine[], rule: Rule): Example[] {
   const examples: Example[] = []
-  lines.forEach((line, index) => {
+  lines.forEach((line) => {
     if (examples.length >= 5) return
-    if (rule.patterns.some((pattern) => pattern.test(line))) {
-      examples.push({ line: index + 1, snippet: redactSensitiveData(line.trim()) })
+    if (matchesRule(line, rule)) {
+      examples.push({ line: line.number, snippet: redactSensitiveData(line.raw.trim()) })
     }
   })
   return examples
@@ -200,7 +263,7 @@ function getConfidence(rule: Rule, occurrences: number): number {
   return Math.min(99, baseline + Math.min(20, occurrences * 3))
 }
 
-function collectStats(lines: string[]) {
+function collectStats(lines: LogLine[]) {
   const methodCounts: Record<string, number> = {}
   const statusCounts: Record<string, number> = {}
   const ipCounts = new Map<string, number>()
@@ -211,28 +274,28 @@ function collectStats(lines: string[]) {
   let responseSamples = 0
 
   lines.forEach((line) => {
-    const method = line.match(methodPattern)?.[1]?.toUpperCase()
+    const methodMatch = methodPatterns.map((pattern) => line.searchable.match(pattern)).find(Boolean)
+    const method = methodMatch?.[1]?.toUpperCase() ?? methodMatch?.[2]?.toUpperCase()
     if (method) {
       methodCounts[method] = (methodCounts[method] ?? 0) + 1
       requestCount += 1
     }
 
-    const status = statusPatterns.map((pattern) => line.match(pattern)?.[1]).find(Boolean)
+    const status = statusPatterns.map((pattern) => line.searchable.match(pattern)?.[1]).find(Boolean)
     if (status) {
       statusCounts[status] = (statusCounts[status] ?? 0) + 1
       if (status.startsWith('4')) status4xx += 1
       if (status.startsWith('5')) status5xx += 1
     }
 
-    const addresses = line.match(ipv4Pattern) ?? []
+    const addresses = line.raw.match(ipv4Pattern) ?? []
     addresses.forEach((ip) => {
-      const octets = ip.split('.').map(Number)
-      if (octets.every((octet) => octet >= 0 && octet <= 255)) {
+      if (isValidIpv4(ip)) {
         ipCounts.set(ip, (ipCounts.get(ip) ?? 0) + 1)
       }
     })
 
-    const duration = durationPatterns.map((pattern) => line.match(pattern)?.[1]).find(Boolean)
+    const duration = durationPatterns.map((pattern) => line.searchable.match(pattern)?.[1]).find(Boolean)
     if (duration) {
       responseTotal += Number(duration)
       responseSamples += 1
@@ -256,13 +319,25 @@ function collectStats(lines: string[]) {
 }
 
 export function analyzeLog(fileName: string, content: string): AnalysisResult {
-  const lines = content.replace(/\0/g, '').split(/\r?\n/).filter((line) => line.trim().length > 0)
+  const lines = toLogLines(content)
   const stats = collectStats(lines)
   const detections: Detection[] = []
 
   rules.forEach((rule) => {
-    const occurrences = lines.filter((line) => rule.patterns.some((pattern) => pattern.test(line))).length
-    const examples = getExamples(lines, rule)
+    const matchingLines = lines.filter((line) => matchesRule(line, rule))
+    const matchingBySource = new Map<string, number>()
+    matchingLines.forEach((line) => {
+      const source = line.ip ?? 'unknown'
+      matchingBySource.set(source, (matchingBySource.get(source) ?? 0) + 1)
+    })
+    const qualifyingLines = rule.threshold
+      ? matchingLines.filter((line) => {
+        const source = line.ip ?? 'unknown'
+        return (matchingBySource.get(source) ?? 0) >= rule.threshold!
+      })
+      : matchingLines
+    const occurrences = qualifyingLines.length
+    const examples = getExamples(qualifyingLines, rule)
     if (rule.threshold && occurrences < rule.threshold) return
     if (occurrences === 0) return
 
